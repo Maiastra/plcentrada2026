@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presentación Prueba PLC 2026</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Montserrat', sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // ========================================
+        // CONFIGURACIÓN - EDITAR AQUÍ
+        // ========================================
+        
+        // URL del Apps Script de VALIDACIÓN (consulta inscripciones)
+        const APPS_SCRIPT_VALIDACION = "https://script.google.com/macros/s/AKfycbwyfM1NzrgzJ6mEmftSI6kfxAK001MjfeUPa5ihPFob1bkHietnjfd8HztVXZ2E18xnqQ/exec";
+
+        // URL del Apps Script de CONFIGURACIÓN (consulta entry IDs dinámicamente)
+        const APPS_SCRIPT_CONFIG = "https://script.google.com/macros/s/AKfycbxMhZ8uUd3bdGRL68B1GQnGDJRgQumgzW0BshxgVoT0fWJx-HwQoTKoMSm2tipxRIPh/exec";
+
+        // Modo de prueba (true = sin validación real, false = producción)
+        const MODO_PRUEBA = false;
+
+        // ========================================
+        // COMPONENTE PRINCIPAL
+        // ========================================
+        function AplicativoPLC() {
+            const [paso, setPaso] = useState('cargando'); // cargando, login, confirmacion, seleccion, presentacion
+            const [documento, setDocumento] = useState('');
+            const [estudiante, setEstudiante] = useState(null);
+            const [documentosValidos, setDocumentosValidos] = useState(new Set());
+            const [momentoSeleccionado, setMomentoSeleccionado] = useState(null);
+            const [mensaje, setMensaje] = useState({ tipo: '', texto: '' });
+            const [loading, setLoading] = useState(false);
+            const [config, setConfig] = useState(null);
+            const [momentosDisponibles, setMomentosDisponibles] = useState([]);
+
+            // Cargar configuración al inicio
+            useEffect(() => {
+                cargarConfiguracion();
+            }, []);
+
+            const cargarConfiguracion = async () => {
+                try {
+                    if (MODO_PRUEBA) {
+                        console.log('🧪 MODO PRUEBA - Configuración simulada');
+                        
+                        // Config de prueba
+                        const configPrueba = {
+                            ENTRADA: {
+                                "Tercero": { formID: "1FAIpQLSczvKmNn5cJv3pBGhbQvvwXlPcsiqahQzmmhlljH76M7xA0hA", entries: { documento: "entry.1734476998" }},
+                                "Quinto": { formID: "TEST_ID", entries: { documento: "entry.123456" }},
+                                "Noveno": { formID: "TEST_ID", entries: { documento: "entry.123456" }},
+                                "Once": { formID: "TEST_ID", entries: { documento: "entry.123456" }}
+                            }
+                        };
+                        
+                        setConfig(configPrueba);
+                        setMomentosDisponibles(['ENTRADA']);
+                        setPaso('login');
+                        return;
+                    }
+
+                    // 1. Cargar Configuración desde Sheets
+                    const response = await fetch(`${APPS_SCRIPT_CONFIG}?action=getConfig`);
+                    const data = await response.json();
+
+                    if (data.success) {
+                        setConfig(data.config);
+                        const disponibles = [];
+                        if (data.config.ENTRADA && Object.keys(data.config.ENTRADA).length > 0) disponibles.push('ENTRADA');
+                        if (data.config.CONTROL && Object.keys(data.config.CONTROL).length > 0) disponibles.push('CONTROL');
+                        if (data.config.SALIDA && Object.keys(data.config.SALIDA).length > 0) disponibles.push('SALIDA');
+                        setMomentosDisponibles(disponibles);
+
+                        // 2. CORRECCIÓN: Carga SOLO documentos válidos (1.6 MB en lugar de 15.8 MB)
+console.log('⚡ Cargando documentos válidos...');
+const resDoc = await fetch(`${APPS_SCRIPT_VALIDACION}?action=getDocumentos`);
+const dataDoc = await resDoc.json();
+
+if (dataDoc.success) {
+    const setDocs = new Set(dataDoc.documentos);
+    setDocumentosValidos(setDocs);
+    console.log(`✅ ${dataDoc.count} documentos cargados en Set()`);
+    setPaso('login');
+} else {
+    setMensaje({ tipo: 'error', texto: '⚠️ Error al cargar base de datos.' });
+    setPaso('login');
+}
+                    } else {
+                        setMensaje({ tipo: 'error', texto: '⚠️ Error al cargar configuración. Contacta al administrador.' });
+                        setPaso('login');
+                    }
+                } catch (error) {
+                    console.error('Error cargando configuración:', error);
+                    setMensaje({ tipo: 'error', texto: '⚠️ Error de conexión al cargar configuración.' });
+                    setPaso('login');
+                }
+            };
+                const validarDocumento = async () => {
+    const docLimpio = documento.trim();
+    if (!docLimpio) {
+        setMensaje({ tipo: 'error', texto: 'Por favor ingresa tu documento' });
+        return;
+    }
+
+    setLoading(true);
+    setMensaje({ tipo: '', texto: '' });
+
+    try {
+        // PASO 1: Validación local instantánea (sin llamada al servidor)
+        if (!documentosValidos.has(docLimpio)) {
+            setMensaje({ 
+                tipo: 'error', 
+                texto: '❌ No estás inscrito en PLC 2026. Por favor contacta a tu profesor para que realice la inscripción.' 
+            });
+            setLoading(false);
+            return;
+        }
+
+        // PASO 2: Documento válido, obtener datos completos del estudiante
+        console.log('⚡ Documento válido, cargando datos...');
+        const response = await fetch(
+            `${APPS_SCRIPT_VALIDACION}?action=getEstudiante&documento=${docLimpio}`
+        );
+        const data = await response.json();
+
+        if (data.success && data.inscrito) {
+            setEstudiante({
+                inscrito: true,
+                documento: data.documento,
+                nombre: data.nombre,
+                grado: data.grado,
+                institucion: data.institucion,
+                curso: data.curso
+            });
+            setPaso('confirmacion');
+        } else {
+            setMensaje({ 
+                tipo: 'error', 
+                texto: '❌ Error al cargar tus datos. Por favor intenta nuevamente.' 
+            });
+        }
+    } catch (error) {
+        console.error('Error de validación:', error);
+        setMensaje({ 
+            tipo: 'error', 
+            texto: '⚠️ Error de conexión. Por favor intenta nuevamente.' 
+        });
+    }
+
+    setLoading(false);
+};
+
+            // PASO 2: Confirmar datos
+            const confirmarDatos = () => {
+                setPaso('seleccion');
+                setMensaje({ tipo: '', texto: '' });
+            };
+
+            const reportarError = () => {
+                setMensaje({ 
+                    tipo: 'warning', 
+                    texto: '⚠️ Por favor contacta a tu profesor para que corrija tus datos. Comunica al consultor de la Fundación Merani para actualizar la información.' 
+                });
+            };
+
+            // PASO 3: Seleccionar momento
+            const seleccionarMomento = (momento) => {
+                // Verificar que el momento esté disponible
+                if (!momentosDisponibles.includes(momento)) {
+                    setMensaje({ 
+                        tipo: 'error', 
+                        texto: `⚠️ El momento ${momento} aún no está disponible. Por favor intenta más tarde.` 
+                    });
+                    return;
+                }
+
+                // Verificar que haya configuración para el grado del estudiante
+                if (!config[momento] || !config[momento][estudiante.grado]) {
+                    setMensaje({ 
+                        tipo: 'error', 
+                        texto: `⚠️ No hay formulario configurado para ${momento} - ${estudiante.grado}. Contacta al coordinador.` 
+                    });
+                    return;
+                }
+
+                setMomentoSeleccionado(momento);
+                setPaso('presentacion');
+            };
+
+            // Obtener URL del Form correcto (DINÁMICO)
+            const obtenerFormURL = () => {
+                if (!estudiante || !momentoSeleccionado || !config) return '';
+                
+                const momentoConfig = config[momentoSeleccionado];
+                if (!momentoConfig || !momentoConfig[estudiante.grado]) return '';
+                
+                const gradoConfig = momentoConfig[estudiante.grado];
+                const formID = gradoConfig.formID;
+                const entries = gradoConfig.entries;
+                
+                // Construir URL con todos los campos pre-rellenados
+                let url = `https://docs.google.com/forms/d/e/${formID}/viewform?embedded=true`;
+                
+                if (entries.documento) {
+                    url += `&${entries.documento}=${encodeURIComponent(estudiante.documento)}`;
+                }
+                if (entries.nombre) {
+                    url += `&${entries.nombre}=${encodeURIComponent(estudiante.nombre)}`;
+                }
+                if (entries.grado) {
+                    url += `&${entries.grado}=${encodeURIComponent(estudiante.grado)}`;
+                }
+                if (entries.curso && estudiante.curso) {
+                    url += `&${entries.curso}=${encodeURIComponent(estudiante.curso)}`;
+                }
+                if (entries.institucion) {
+                    url += `&${entries.institucion}=${encodeURIComponent(estudiante.institucion)}`;
+                }
+                
+                return url;
+            };
+
+            // Reiniciar
+            const reiniciar = () => {
+                setPaso('login');
+                setDocumento('');
+                setEstudiante(null);
+                setMomentoSeleccionado(null);
+                setMensaje({ tipo: '', texto: '' });
+            };
+
+            const volverASeleccion = () => {
+                setPaso('seleccion');
+                setMomentoSeleccionado(null);
+            };
+
+            // Renderizado según el paso
+            if (paso === 'cargando') {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 flex items-center justify-center">
+                        <div className="text-center">
+                            <div className="inline-block animate-spin rounded-full h-16 w-16 border-b-4 border-purple-600 mb-4"></div>
+                            <p className="text-xl text-gray-700 font-bold">Iniciando Sistema PLC 2026...</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 p-4">
+                    <div className="max-w-6xl mx-auto">
+                        {/* Header */}
+                        <div className="bg-white rounded-2xl shadow-xl p-8 mb-6">
+                            <div className="text-center">
+                                <h1 className="text-4xl font-bold text-purple-800 mb-2">
+                                    📚 Prueba PLC 2026
+                                </h1>
+                                <p className="text-gray-600 text-lg">
+                                    Prueba de Lectura Competente - Fundación Social Alberto Merani
+                                </p>
+                                {MODO_PRUEBA && (
+                                    <div className="mt-2 inline-block bg-yellow-100 text-yellow-800 px-4 py-1 rounded-full text-sm">
+                                        🧪 MODO PRUEBA
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* PASO 1: LOGIN */}
+                        {paso === 'login' && (
+                            <div className="bg-white rounded-2xl shadow-xl p-8">
+                                <div className="max-w-md mx-auto">
+                                    <div className="text-center mb-6">
+                                        <div className="inline-flex items-center justify-center w-16 h-16 bg-purple-100 rounded-full mb-4">
+                                            <span className="text-3xl">🔐</span>
+                                        </div>
+                                        <h2 className="text-2xl font-bold text-gray-800">
+                                            Ingresa tu Documento de Identidad
+                                        </h2>
+                                        <p className="text-gray-600 mt-2">
+                                            Paso 1 de 4
+                                        </p>
+                                    </div>
+                                    
+                                    <div className="mb-6">
+                                        <label className="block text-gray-700 font-semibold mb-2">
+                                            Documento de Identidad
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={documento}
+                                            onChange={(e) => setDocumento(e.target.value)}
+                                            onKeyPress={(e) => e.key === 'Enter' && validarDocumento()}
+                                            placeholder="Ingresa tu documento sin puntos ni espacios"
+                                            className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none text-lg"
+                                            disabled={loading}
+                                            autoFocus
+                                        />
+                                    </div>
+
+                                    {mensaje.texto && (
+                                        <div className={`mb-6 p-4 rounded-lg ${
+                                            mensaje.tipo === 'error' 
+                                                ? 'bg-red-100 text-red-800 border border-red-300' 
+                                                : mensaje.tipo === 'warning'
+                                                ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                                                : 'bg-green-100 text-green-800 border border-green-300'
+                                        }`}>
+                                            {mensaje.texto}
+                                        </div>
+                                    )}
+
+                                    <button
+                                        onClick={validarDocumento}
+                                        disabled={loading}
+                                        className="w-full bg-purple-600 text-white py-3 rounded-lg font-semibold text-lg hover:bg-purple-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                    >
+                                        {loading ? 'Validando...' : 'Continuar →'}
+                                    </button>
+
+                                    <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                                        <p className="text-sm text-blue-800 font-semibold mb-2">
+                                            💡 Importante:
+                                        </p>
+                                        <ul className="text-sm text-blue-700 space-y-1 list-disc list-inside">
+                                            <li>Ingresa tu documento sin puntos ni espacios</li>
+                                            <li>Debes estar inscrito previamente en PLC 2026</li>
+                                            <li>Momentos disponibles: {momentosDisponibles.join(', ') || 'Ninguno'}</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* PASO 2: CONFIRMACIÓN */}
+                        {paso === 'confirmacion' && estudiante && (
+                            <div className="bg-white rounded-2xl shadow-xl p-8">
+                                <div className="max-w-md mx-auto">
+                                    <div className="text-center mb-6">
+                                        <div className="inline-flex items-center justify-center w-16 h-16 bg-green-100 rounded-full mb-4">
+                                            <span className="text-3xl">✅</span>
+                                        </div>
+                                        <h2 className="text-2xl font-bold text-gray-800">
+                                            Datos Encontrados
+                                        </h2>
+                                        <p className="text-gray-600 mt-2">
+                                            Paso 2 de 4 - Verifica tu información
+                                        </p>
+                                    </div>
+
+                                    <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-6 mb-6">
+                                        <div className="space-y-3">
+                                            <div>
+                                                <p className="text-sm text-gray-600">Nombre completo:</p>
+                                                <p className="text-lg font-semibold text-gray-800">{estudiante.nombre}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-gray-600">Grado:</p>
+                                                <p className="text-lg font-semibold text-gray-800">{estudiante.grado}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-gray-600">Institución:</p>
+                                                <p className="text-lg font-semibold text-gray-800">{estudiante.institucion}</p>
+                                            </div>
+                                            {estudiante.curso && (
+                                                <div>
+                                                    <p className="text-sm text-gray-600">Curso:</p>
+                                                    <p className="text-lg font-semibold text-gray-800">{estudiante.curso}</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4 mb-6">
+                                        <p className="text-sm text-yellow-800 font-semibold">
+                                            ⚠️ ¿Los datos son correctos?
+                                        </p>
+                                        <p className="text-xs text-yellow-700 mt-1">
+                                            Si hay algún error, repórtalo a tu profesor antes de continuar
+                                        </p>
+                                    </div>
+
+                                    {mensaje.texto && (
+                                        <div className={`mb-6 p-4 rounded-lg ${
+                                            mensaje.tipo === 'error' 
+                                                ? 'bg-red-100 text-red-800 border border-red-300' 
+                                                : mensaje.tipo === 'warning'
+                                                ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                                                : 'bg-green-100 text-green-800 border border-green-300'
+                                        }`}>
+                                            {mensaje.texto}
+                                        </div>
+                                    )}
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <button
+                                            onClick={reportarError}
+                                            className="bg-red-100 text-red-700 py-3 rounded-lg font-semibold hover:bg-red-200 transition-colors border-2 border-red-300"
+                                        >
+                                            ❌ Reportar Error
+                                        </button>
+                                        <button
+                                            onClick={confirmarDatos}
+                                            className="bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors"
+                                        >
+                                            ✅ Sí, Continuar
+                                        </button>
+                                    </div>
+
+                                    <button
+                                        onClick={reiniciar}
+                                        className="w-full mt-4 text-gray-600 py-2 hover:text-gray-800 transition-colors"
+                                    >
+                                        ← Volver al inicio
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* PASO 3: SELECCIÓN DE MOMENTO */}
+                        {paso === 'seleccion' && estudiante && (
+                            <div className="bg-white rounded-2xl shadow-xl p-8">
+                                <div className="max-w-3xl mx-auto">
+                                    <div className="text-center mb-8">
+                                        <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
+                                            <span className="text-3xl">📝</span>
+                                        </div>
+                                        <h2 className="text-2xl font-bold text-gray-800">
+                                            Selecciona el Momento a Presentar
+                                        </h2>
+                                        <p className="text-gray-600 mt-2">
+                                            Paso 3 de 4 - Elige cuál prueba vas a realizar
+                                        </p>
+                                    </div>
+
+                                    <div className="grid md:grid-cols-3 gap-6 mb-6">
+                                        {/* ENTRADA */}
+                                        <button
+                                            onClick={() => seleccionarMomento('ENTRADA')}
+                                            disabled={!momentosDisponibles.includes('ENTRADA')}
+                                            className={`p-8 rounded-2xl shadow-lg transition-all transform hover:scale-105 ${
+                                                momentosDisponibles.includes('ENTRADA')
+                                                    ? 'bg-gradient-to-br from-green-400 to-green-600 text-white hover:shadow-xl'
+                                                    : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                            }`}
+                                        >
+                                            <div className="text-5xl mb-4">📗</div>
+                                            <h3 className="text-2xl font-bold mb-2">ENTRADA</h3>
+                                            <p className={momentosDisponibles.includes('ENTRADA') ? 'text-green-100' : 'text-gray-400'}>
+                                                {momentosDisponibles.includes('ENTRADA') ? 'Disponible ahora' : 'No disponible'}
+                                            </p>
+                                        </button>
+
+                                        {/* CONTROL */}
+                                        <button
+                                            onClick={() => seleccionarMomento('CONTROL')}
+                                            disabled={!momentosDisponibles.includes('CONTROL')}
+                                            className={`p-8 rounded-2xl shadow-lg transition-all transform hover:scale-105 ${
+                                                momentosDisponibles.includes('CONTROL')
+                                                    ? 'bg-gradient-to-br from-yellow-400 to-yellow-600 text-white hover:shadow-xl'
+                                                    : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                            }`}
+                                        >
+                                            <div className="text-5xl mb-4">📙</div>
+                                            <h3 className="text-2xl font-bold mb-2">CONTROL</h3>
+                                            <p className={momentosDisponibles.includes('CONTROL') ? 'text-yellow-100' : 'text-gray-400'}>
+                                                {momentosDisponibles.includes('CONTROL') ? 'Disponible ahora' : 'No disponible'}
+                                            </p>
+                                        </button>
+
+                                        {/* SALIDA */}
+                                        <button
+                                            onClick={() => seleccionarMomento('SALIDA')}
+                                            disabled={!momentosDisponibles.includes('SALIDA')}
+                                            className={`p-8 rounded-2xl shadow-lg transition-all transform hover:scale-105 ${
+                                                momentosDisponibles.includes('SALIDA')
+                                                    ? 'bg-gradient-to-br from-blue-400 to-blue-600 text-white hover:shadow-xl'
+                                                    : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                            }`}
+                                        >
+                                            <div className="text-5xl mb-4">📘</div>
+                                            <h3 className="text-2xl font-bold mb-2">SALIDA</h3>
+                                            <p className={momentosDisponibles.includes('SALIDA') ? 'text-blue-100' : 'text-gray-400'}>
+                                                {momentosDisponibles.includes('SALIDA') ? 'Disponible ahora' : 'No disponible'}
+                                            </p>
+                                        </button>
+                                    </div>
+
+                                    {mensaje.texto && (
+                                        <div className={`mb-4 p-4 rounded-lg ${
+                                            mensaje.tipo === 'error' 
+                                                ? 'bg-red-100 text-red-800 border border-red-300' 
+                                                : 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                                        }`}>
+                                            {mensaje.texto}
+                                        </div>
+                                    )}
+
+                                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                                        <p className="text-sm text-blue-800">
+                                            <strong>💡 Recuerda:</strong> Una vez inicies la prueba, tendrás 120 minutos para completarla.
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        onClick={reiniciar}
+                                        className="w-full text-gray-600 py-2 hover:text-gray-800 transition-colors"
+                                    >
+                                        ← Volver al inicio
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* PASO 4: PRESENTACIÓN - CORREGIDO (SINGLE IFRAME) */}
+                        {paso === 'presentacion' && estudiante && momentoSeleccionado && (
+                            <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
+                                <div className="bg-purple-700 text-white p-6">
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <h3 className="text-2xl font-bold mb-2">
+                                                {estudiante.nombre}
+                                            </h3>
+                                            <p className="text-purple-100">
+                                                📋 Grado: {estudiante.grado} | 🏫 {estudiante.institucion}
+                                            </p>
+                                            <div className="mt-3 inline-block bg-white/20 px-4 py-2 rounded-lg">
+                                                <p className="font-bold text-lg">
+                                                    📝 Momento: {momentoSeleccionado}
+                                                </p>
+                                            </div>
+                                            <p className="text-purple-100 text-sm mt-2">
+                                                Paso 4 de 4 - Presentación de la prueba
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={volverASeleccion}
+                                            className="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-lg transition-colors text-sm"
+                                        >
+                                            ← Cambiar momento
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="bg-yellow-50 border-l-4 border-yellow-400 p-6">
+                                    <h4 className="font-bold text-yellow-800 mb-3 text-lg">⚠️ Instrucciones Importantes:</h4>
+                                    <div className="grid md:grid-cols-2 gap-4">
+                                        <ul className="text-yellow-800 space-y-2 list-disc list-inside">
+                                            <li>Tienes <strong>120 minutos</strong> para completar la prueba</li>
+                                            <li>Lee cuidadosamente cada pregunta antes de responder</li>
+                                            <li>Puedes navegar entre las preguntas libremente</li>
+                                        </ul>
+                                        <ul className="text-yellow-800 space-y-2 list-disc list-inside">
+                                            <li>Al finalizar, haz clic en <strong>"Enviar"</strong> dentro del formulario</li>
+                                            <li>Verifica todas tus respuestas antes de enviar</li>
+                                            <li>Si tienes problemas técnicos, contacta a tu coordinador inmediatamente</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <div className="p-6">
+                                    {/* CONTENEDOR CON RELATIVE PARA POSICIONAR EL BLOQUEADOR */}
+                                    <div className="bg-gray-100 rounded-lg overflow-hidden shadow-inner relative" style={{ height: '900px' }}>
+                                        <iframe 
+                                            src={obtenerFormURL()}
+                                            width="100%" 
+                                            height="100%" 
+                                            frameBorder="0" 
+                                            marginHeight="0" 
+                                            marginWidth="0"
+                                        >
+                                            Cargando formulario...
+                                        </iframe>
+                                        
+                                        {/* CAPA PROTECTORA (Bloquea los clicks en el pie de página) */}
+                                        <div 
+                                            style={{
+                                                position: 'absolute',
+                                                bottom: 0,
+                                                left: 0,
+                                                width: '100%',
+                                                height: '95px', 
+                                                background: 'transparent', 
+                                                zIndex: 20
+                                            }}
+                                        ></div>
+                                    </div>
+                                </div>
+
+                                <div className="bg-gray-50 p-6 text-center border-t">
+                                    <p className="text-gray-700 font-semibold mb-2">
+                                        📧 ¿Necesitas ayuda?
+                                    </p>
+                                    <p className="text-gray-600 text-sm">
+                                        Si tienes problemas técnicos, contacta inmediatamente a tu coordinador
+                                    </p>
+                                    <p className="text-sm text-gray-500 mt-3">
+                                        PLC 2026 - Fundación Social Alberto Merani
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<AplicativoPLC />, document.getElementById('root'));
+    </script>
+</body>
+</html>
